@@ -1,31 +1,19 @@
-from typing import List, Optional
+from __future__ import annotations
+from typing import List
 
 def name_to_phrase(name: str) -> str:
-    """Convert a feature name to a human-readable phrase."""
-    if not name:
-        return ""
-    
-    # Handle common patterns
-    if name.startswith("mem:"):
-        return f"{name[4:].replace('_', ' ').capitalize()}"
-    
-    return name.replace("_", " ").capitalize()
+    if name.startswith("mem:"): return f"recent {name[4:]}"
+    if name.startswith("mode="): return f"system was '{name.split('=',1)[1]}'"
+    if name.startswith("evt:"):
+        k,v = name[4:].split("=",1) if "=" in name else (name[4:],"")
+        if k in {"location","zone","room"}: return f"{v} activity"
+        if k in {"type","event","sensor_type"}: return f"{v} event"
+        return f"{k}={v}"
+    if name.startswith("tag:"): return f"device tag '{name[4:]}'"
+    if name.startswith("num:"): return name.replace("num:","").replace(":"," ")
+    return name
 
-def format_explanation(level: str, phrases: List[str], confidence: float, 
-                      is_low_confidence: bool = False) -> str:
-    """Format the final explanation for the user."""
-    if not phrases:
-        return f"No specific threats detected. Security level: {level}."
-    
-    # Join phrases with appropriate grammar
-    if len(phrases) == 1:
-        reason = phrases[0]
-    else:
-        reason = ", ".join(phrases[:-1]) + f", and {phrases[-1]}"
-    
-    confidence_note = " (low confidence)" if is_low_confidence else ""
-    
-    return (
-        f"Security level: {level.capitalize()}{confidence_note}. "
-        f"Based on: {reason}."
-    )
+def format_explanation(level:str, phrases:List[str], prob:float, low_conf:bool) -> str:
+    core = ", ".join(phrases[:3]) if phrases else "patterns in the input"
+    c = f"{prob:.2f}"
+    return f"{level.capitalize()} {'with low confidence ' if low_conf else ''}based on {core}. Confidence={c}."
