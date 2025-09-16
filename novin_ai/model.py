@@ -1,12 +1,50 @@
-# Only the changed parts are shown (build_pipeline and predict snippets).
-# Replace the corresponding functions in your existing file.
+from __future__ import annotations
+from dataclasses import dataclass, field
+from datetime import datetime
+import logging
+from typing import Any, Dict, List, Optional
+import joblib
+import numpy as np
+from sklearn.feature_extraction import DictVectorizer, FeatureHasher
+from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.pipeline import Pipeline
+
+from .feature import FeatureExtractor, Ontology
+from .memory import TemporalMemory
+from .reasoner import reason, ReasonerConfig
+from .explain import name_to_phrase, format_explanation
+from .schemas import SampleInput
+
+logger = logging.getLogger(__name__)
+
+ALLOWED = ("ignore", "standard", "elevated", "critical")
+
+@dataclass
+class TrainConfig:
+    vectorizer: str = "dict"
+    n_features: int = 2**16
+    class_weight: Optional[str] = "balanced"
+    calibrate: bool = True
+    prefilter_topk: Optional[int] = 2000
+    reasoner: ReasonerConfig = ReasonerConfig()
+    max_iter: int = 1000
+    C: float = 1.0
+    penalty: str = "l2"
+
+@dataclass
+class SavedModel:
+    pipe: Pipeline
+    cfg: TrainConfig
+    dictvec: bool
+    feature_names: Optional[List[str]] = None
+    trained_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 def build_pipeline(cfg: TrainConfig, onto: Optional[Ontology]) -> Pipeline:
     feat = FeatureExtractor(ontology=onto, prefilter_topk=cfg.prefilter_topk)
     vec = DictVectorizer(sparse=True) if cfg.vectorizer == "dict" else FeatureHasher(n_features=cfg.n_features, alternate_sign=False, input_type="dict")
     
     # Solver selection based on penalty
-    # 'saga' supports l1, l2, elasticnet, and none with multiclass; 'lbfgs' supports l2 and none
     if cfg.penalty == "l1":
         solver = "saga"  # saga supports l1 + multinomial
     else:
@@ -26,6 +64,16 @@ def build_pipeline(cfg: TrainConfig, onto: Optional[Ontology]) -> Pipeline:
         clf = CalibratedClassifierCV(clf, cv=3, method="sigmoid", n_jobs=-1)
     return Pipeline([("feat", feat), ("vec", vec), ("clf", clf)])
 
+def train(X: List[Dict[str, Any]], y: List[str], cfg: TrainConfig, onto: Optional[Ontology]) -> SavedModel:
+    pipe = build_pipeline(cfg, onto)
+    pipe.fit(X, y)
+    names = None
+    if cfg.vectorizer == "dict":
+        names = pipe.named_steps["vec"].get_feature_names_out().tolist()
+    return SavedModel(pipe, cfg, cfg.vectorizer == "dict", names)
+
+def save(sm: SavedModel, path: str): joblib.dump(sm, path)
+def load(path: str) -> SavedModel: return joblib.load(path)
 
 def predict(sm: SavedModel, sample: Dict[str, Any], memory: Optional[TemporalMemory] = None) -> Dict[str, Any]:
     start_time = datetime.utcnow()
@@ -102,3 +150,17 @@ def predict(sm: SavedModel, sample: Dict[str, Any], memory: Optional[TemporalMem
         "trained_at": sm.trained_at,
         "latency_ms": latency_ms
     }
+
+def self_test():
+    """Run a quick smoke test to verify installation."""
+    from .synth import sample_event, label
+    from .cli import _load_jsonl
+
+    X = [{"events": [sample_event()], "systemMode": "away", "time": "2025-01-01T12:00:00Z"} for _ in range(10)]
+    y = [label(d["events"], d["systemMode"]) for d in X]
+
+    sm = train(X, y, TrainConfig(vectorizer="hash", n_features=256), None)
+    pred = predict(sm, X[0])
+    assert pred["threatLevel"] in ("ignore", "standard", "elevated", "critical"), "Prediction failed"
+    print("✅ Self-test passed. Model is functional.")
+    return True
