@@ -1,32 +1,53 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
-import random
+from dataclasses import dataclass
+from typing import List, Tuple, Dict, Any
 
 @dataclass
 class ReasonerConfig:
-    min_confidence: float = 0.7
-    max_phrases: int = 3
-    min_phrases: int = 1
-    random_seed: int = 42
+    tau_elevated: float = 0.55
+    tau_critical: float = 0.65
+    min_features: int = 2
 
-    def __post_init__(self):
-        random.seed(self.random_seed)
+Threats = ("ignore", "standard", "elevated", "critical")
+idx = {t: i for i, t in enumerate(Threats)}
 
-def reason(level: str, probs: List[float], num_phrases: int, 
-          cfg: ReasonerConfig) -> Tuple[str, List[str], List[str]]:
-    """Apply reasoning to adjust threat level and generate explanations."""
-    dev_trace = [f"Starting with level: {level} and {num_phrases} phrases"]
-    user_trace = []
-    
-    # Simple confidence-based adjustment
-    max_prob = max(probs) if probs else 0
-    if max_prob < cfg.min_confidence and level != "ignore":
-        new_level = "standard" if level in ("elevated", "critical") else "ignore"
-        dev_trace.append(f"Low confidence ({max_prob:.2f} < {cfg.min_confidence}), adjusting level from {level} to {new_level}")
-        level = new_level
-    
-    # Ensure we have a reasonable number of phrases
-    num_phrases = max(cfg.min_phrases, min(cfg.max_phrases, num_phrases))
-    
-    return level, dev_trace, user_trace
+def _downgrade(l: str) -> str:
+    return Threats[max(0, idx[l] - 1)]
+
+def reason(level: str, probs: List[float], feats: int, cfg: ReasonerConfig, events: List[Dict[str, Any]]) -> Tuple[str, bool, List[str], List[str]]:
+    dev_trace, user_trace = [], []
+    p = max(probs)
+    low = False
+
+    dev_trace.append(f"Base={level} p={p:.2f}")
+    user_trace.append(f"Initial model prediction was {level} with {p:.0%} confidence.")
+
+    # ESCALATE: if critical event present, force elevated/critical
+    CRITICAL_EVENT_TYPES = {"smoke", "glassbreak"}
+    critical_events = [e for e in events if e.get("type") in CRITICAL_EVENT_TYPES]
+    if critical_events and level in {"ignore", "standard"}:
+        old_level = level
+        level = "critical" if p > 0.5 else "elevated"
+        dev_trace.append(f"Escalate: critical event(s) present: {[e.get('type') for e in critical_events]}")
+        user_trace.append(f"Threat escalated due to critical event: {critical_events[0].get('type')}.")
+        low = False  # override low confidence
+
+    # DOWNGRADE
+    if level == "critical" and p < cfg.tau_critical and not critical_events:
+        level = "elevated"
+        low = True
+        dev_trace.append("Downgrade: critical<tau_critical")
+        user_trace.append("Severity reduced from critical to elevated due to low confidence.")
+    elif level == "elevated" and p < cfg.tau_elevated and not critical_events:
+        level = "standard"
+        low = True
+        dev_trace.append("Downgrade: elevated<tau_elevated")
+        user_trace.append("Severity reduced from elevated to standard due to low confidence.")
+
+    if feats < cfg.min_features:
+        level = _downgrade(level)
+        low = True
+        dev_trace.append("Downgrade: insufficient strong features")
+        user_trace.append("Severity lowered because not enough strong signals were present.")
+
+    return level, low, dev_trace, user_trace
