@@ -27,7 +27,7 @@ class TrainConfig:
     class_weight: Optional[str] = "balanced"
     calibrate: bool = True
     prefilter_topk: Optional[int] = 2000
-    reasoner: ReasonerConfig = ReasonerConfig()
+    reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
     max_iter: int = 1000
     C: float = 1.0
     penalty: str = "l2"
@@ -159,7 +159,7 @@ def self_test():
     X = [{"events": [sample_event()], "systemMode": "away", "time": "2025-01-01T12:00:00Z"} for _ in range(10)]
     y = [label(d["events"], d["systemMode"]) for d in X]
 
-    sm = train(X, y, TrainConfig(vectorizer="hash", n_features=256), None)
+    sm = train(X, y, TrainConfig(vectorizer="hash", n_features=256, calibrate=False), None)
     pred = predict(sm, X[0])
     assert pred["threatLevel"] in ("ignore", "standard", "elevated", "critical"), "Prediction failed"
     print("✅ Self-test passed. Model is functional.")
