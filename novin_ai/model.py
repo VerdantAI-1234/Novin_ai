@@ -27,7 +27,7 @@ class TrainConfig:
     class_weight: Optional[str] = "balanced"
     calibrate: bool = True
     prefilter_topk: Optional[int] = 2000
-    reasoner: ReasonerConfig = ReasonerConfig()
+    reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
     max_iter: int = 1000
     C: float = 1.0
     penalty: str = "l2"
